@@ -1,4 +1,4 @@
-# 🚀 Arweave Block Explorer
+# Arweave Block Explorer
 
 An immersive 3D data sculpture that transforms the Arweave blockchain into a living, interactive visualization. Experience the permanent web as a dynamic architectural structure where each block becomes a translucent cube, revealing the rich tapestry of data flowing through the network.
 
@@ -6,40 +6,38 @@ An immersive 3D data sculpture that transforms the Arweave blockchain into a liv
 
 ## ✨ Features
 
-### 🎨 **Artistic Data Visualization**
+###  **Artistic Data Visualization**
 - **3D Block Architecture**: Each Arweave block is rendered as a translucent cube, creating a mesmerizing data sculpture
 - **Content-Aware Styling**: Blocks are visually differentiated by their dominant content type with intuitive color coding
 - **Ethereal Aesthetics**: Semi-transparent materials create a holographic, futuristic appearance
 
-### 🎯 **Intelligent Content Recognition**
+###  **Intelligent Content Recognition**
 - **Smart Categorization**: Automatically identifies and categorizes transactions by content type (Image, Video, Audio, Other)
 - **Visual Symbols**: Pure media blocks display iconic symbols - musical notes (𝄞) for audio and play buttons (▶) for video
 - **Content Filtering**: Advanced filtering system allows you to focus on specific data types
 
-### 🖼️ **Revolutionary Render Mode**
+###  **Render Mode**
 - **Image Projection**: Transform image-containing blocks into textured surfaces displaying actual content
 - **Artistic Processing**: Images are converted to high-contrast monochrome with custom GPU shaders
 - **Performance Optimized**: Intelligent on-demand rendering with frustum culling and texture caching
 - **Memory Management**: Automatic texture disposal prevents browser crashes during extended use
 
-### 🎮 **Intuitive Interaction**
+###  **Intuitive Interaction**
 - **Seamless Navigation**: Smooth mouse controls for rotation, zoom, and panning
 - **Multiple Camera Modes**: Switch between default, top-down, and isometric views
 - **Media Previews**: Click any media block to view/play content with full-screen preview
 - **Day Navigation**: Travel through time to explore historical blockchain data
 
-### ⚡ **Real-Time Data Streaming**
+### **Real-Time Data Streaming**
 - **Live WebSocket Connection**: Real-time streaming of new blocks as they're added to the network
 - **Adaptive Rendering**: New blocks automatically inherit the current filter and render settings
 - **Intelligent Filtering**: In Render mode, only image-containing blocks are streamed for optimal performance
 
-### 🎛️ **Advanced Controls**
+### **Advanced Controls**
 - **Content Type Legend**: Interactive legend with one-click filtering
 - **Reset Functionality**: Instant return to unfiltered view
 - **Contextual UI**: Render mode only appears when relevant (after selecting Image filter)
 - **Responsive Design**: Fully responsive interface that adapts to any screen size
-
-## 🛠️ **Technical Excellence**
 
 ### **Frontend Architecture**
 - **Three.js WebGL Rendering**: Hardware-accelerated 3D graphics
@@ -58,8 +56,6 @@ An immersive 3D data sculpture that transforms the Arweave blockchain into a liv
 - **GPU Acceleration**: Hardware-accelerated rendering and image processing
 - **Memory Leak Prevention**: Automatic cleanup of Three.js resources
 - **Efficient Filtering**: Smart visibility management without object recreation
-
-## 🚀 **Quick Start**
 
 ### **Prerequisites**
 - Modern web browser with WebGL support
