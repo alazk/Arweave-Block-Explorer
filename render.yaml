@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: arweave-metabolism
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+    healthCheckPath: /
+    headers:
+      - path: /*
+        name: Access-Control-Allow-Origin
+        value: "*"

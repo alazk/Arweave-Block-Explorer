@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arweave Metabolism</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="retro.css">
+</head>
+<body>
+    <div id="main-ui">
+        <div id="three-container"></div>
+
+        <div id="info" class="ui-panel">
+            <h2>Arweave Block Explorer</h2>
+            <div id="comms" aria-live="polite">Connecting...</div>
+            <div id="stats">0 blocks (0 B)</div>
+        </div>
+
+        <div id="navigation-prev">
+            <a id="prev-day" class="arrow">&#x2190;</a>
+        </div>
+        <div id="navigation-next">
+            <a id="next-day" class="arrow">&#x2192;</a>
+        </div>
+
+        <div id="date-display" class="ui-panel">Today</div>
+
+        <div id="legend" class="ui-panel">
+            <h3 id="legend-title">BY DATA TYPE</h3>
+            <div id="legend-items"></div>
+        </div>
+
+        <div id="controls" class="ui-panel">
+            <button id="toggle-rotation" class="viz-btn">ROTATION</button>
+            <button id="top-view" class="viz-btn">TOP</button>
+            <button id="iso-view" class="viz-btn">ISOMETRIC</button>
+            <button id="reset-view" class="viz-btn">RESET</button>
+        </div>
+
+        <!-- Block Info Panel -->
+        <div id="block-info-panel" class="ui-panel" style="display:none;">
+            <button id="close-block-info" class="close-btn">&times;</button>
+            <h3 id="block-title">Block Details</h3>
+            <div class="info-section">
+                <h4>Block Information</h4>
+                <div class="info-row">
+                    <span class="info-label">Height:</span>
+                    <span class="info-value" id="block-height">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Total Size:</span>
+                    <span class="info-value" id="block-total-size">-</span>
+                </div>
+            </div>
+            <div class="info-section">
+                <h4>Transactions</h4>
+                <div id="transaction-list"></div>
+            </div>
+        </div>
+
+        <!-- Content Preview Panel -->
+        <div id="content-preview-panel" class="ui-panel" style="display:none;">
+            <button id="close-content-preview" class="close-btn">&times;</button>
+            <h4 id="content-title">Transaction Content</h4>
+            <div id="content-display" class="content-display"></div>
+            <div class="preview-nav">
+                <button id="prev-tx-btn" class="viz-btn">&lt; Prev</button>
+                <span id="tx-counter"></span>
+                <button id="next-tx-btn" class="viz-btn">Next &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script async src="https://unpkg.com/es-module-shims@1.6.3"></script>
+    <script type="importmap">
+        { "imports": { 
+            "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+            "three/": "https://unpkg.com/three@0.158.0/"
+        }}
+    </script>
+    <script type="module" src="sketch.js?v=45"></script>
+</body>
+</html>

@@ -1,0 +1,1083 @@
+import * as THREE from 'three';
+
+console.log('🚀 Arweave Block Explorer - v4.5: Sticky Render Bug Fixed');
+
+// ---- Global Variables ----
+let scene, camera, renderer, raycaster, mouse;
+let monolith, ws = null;
+let tooltip = null, hoveredBlock = null;
+let isDragging = false, previousMousePosition = { x: 0, y: 0 };
+let isRotating = false;
+let cameraMode = 'default'; // 'default', 'top', 'iso'
+let currentlyDisplayedDate = new Date();
+let currentPreviewableTxs = [];
+let currentTxIndex = 0;
+let audioSymbolTexture, videoSymbolTexture;
+const textureCache = {};
+const frustum = new THREE.Frustum();
+const cameraMatrix = new THREE.Matrix4();
+let activeFilterType = null;
+
+// Block stats
+const blockBaseSize = 25;
+let blockCount = 0;
+let dailyTotalSize = 0;
+let startYOffset = -200;
+const verticalStep = 2;
+
+// Content type styles
+const contentTypeDataStyles = {
+    image: { name: 'Image', outlineColor: 0xFFFFFF, cubeColor: 0xCCCCCC },       // Whitish
+    video: { name: 'Video', outlineColor: 0xFFFFFF, cubeColor: 0xCCCCCC },       // Whitish
+    audio: { name: 'Audio', outlineColor: 0xFFFFFF, cubeColor: 0xCCCCCC },       // Whitish
+    other: { name: 'Other', outlineColor: 0x808080, cubeColor: 0x1C1C1C },       // Black/Grey
+};
+
+function createSymbolTextures() {
+    const textureSize = 256;
+    const backgroundColor = '#CCCCCC';
+    const symbolColor = '#1C1C1C';
+
+    // Audio Symbol (Musical Note - G Clef)
+    const audioCanvas = document.createElement('canvas');
+    audioCanvas.width = textureSize;
+    audioCanvas.height = textureSize;
+    const audioCtx = audioCanvas.getContext('2d');
+    audioCtx.fillStyle = backgroundColor;
+    audioCtx.fillRect(0, 0, textureSize, textureSize);
+    audioCtx.font = `${textureSize * 0.8}px serif`;
+    audioCtx.fillStyle = symbolColor;
+    audioCtx.textAlign = 'center';
+    audioCtx.textBaseline = 'middle';
+    audioCtx.fillText('𝄞', textureSize / 2, textureSize / 2);
+    audioSymbolTexture = new THREE.CanvasTexture(audioCanvas);
+
+    // Video Symbol (Play Button)
+    const videoCanvas = document.createElement('canvas');
+    videoCanvas.width = textureSize;
+    videoCanvas.height = textureSize;
+    const videoCtx = videoCanvas.getContext('2d');
+    videoCtx.fillStyle = backgroundColor;
+    videoCtx.fillRect(0, 0, textureSize, textureSize);
+    videoCtx.font = `${textureSize * 0.8}px sans-serif`;
+    videoCtx.fillStyle = symbolColor;
+    videoCtx.textAlign = 'center';
+    videoCtx.textBaseline = 'middle';
+    videoCtx.fillText('▶', textureSize / 2, textureSize / 2);
+    videoSymbolTexture = new THREE.CanvasTexture(videoCanvas);
+}
+
+// ---- Helper Functions ----
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function getTransactionContentType(tx) {
+    if (!tx || !tx.tags) return 'other';
+    
+    const contentTypeTag = tx.tags.find ? 
+        tx.tags.find(tag => tag.name === 'Content-Type') :
+        tx.tags['Content-Type'];
+    
+    if (!contentTypeTag) return 'other';
+    
+    const contentTypeValue = (typeof contentTypeTag === 'string') ? contentTypeTag : contentTypeTag.value;
+    if (typeof contentTypeValue !== 'string') return 'other';
+
+    if (contentTypeValue.startsWith('image/')) return 'image';
+    if (contentTypeValue.startsWith('video/')) return 'video';
+    if (contentTypeValue.startsWith('audio/')) return 'audio';
+    return 'other';
+}
+
+function updateStatsDisplay() {
+    const statsElement = document.getElementById('stats');
+    if (statsElement) {
+        statsElement.textContent = `${blockCount} blocks (${formatBytes(dailyTotalSize)})`;
+        statsElement.style.fontSize = '24px';
+        statsElement.style.textAlign = 'center';
+        statsElement.style.color = '#fff';
+        statsElement.style.opacity = '0.5';
+    }
+}
+
+function updateDateDisplay(date) {
+    const dateElement = document.getElementById('date-display');
+    if (dateElement && date) {
+        const options = { year: 'numeric', month: 'long', day: 'numeric' };
+        dateElement.textContent = date.toLocaleDateString('en-US', options);
+    }
+}
+
+// ---- Animation Functions ----
+function startPulsingAnimation(mesh) {
+    if (!mesh || !mesh.scale) return;
+    const start = Date.now();
+    const duration = 1200;
+    const minScale = 1.0;
+    const maxScale = 1.06;
+    
+    function step() {
+        const t = (Date.now() - start) / duration;
+        if (t >= 1) {
+            mesh.scale.set(1, 1, 1);
+            return;
+        }
+        const s = minScale + (maxScale - minScale) * 0.5 * (1 - Math.cos(2 * Math.PI * t));
+        mesh.scale.set(s, s, s);
+        requestAnimationFrame(step);
+    }
+    
+    requestAnimationFrame(step);
+}
+
+function flashOutline(outline) {
+    if (!outline || !outline.material) return;
+    
+    const originalOpacity = outline.material.opacity || 1.0;
+    const duration = 800;
+    const startTime = Date.now();
+    
+    function step() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        const opacity = originalOpacity + (1.0 - originalOpacity) * (1 - progress);
+        outline.material.opacity = opacity;
+        
+        if (progress < 1) {
+            requestAnimationFrame(step);
+        } else {
+            outline.material.opacity = originalOpacity;
+        }
+    }
+    
+    requestAnimationFrame(step);
+}
+
+// ---- Block Management ----
+function clearMonolith() {
+    if (monolith) {
+        while (monolith.children.length > 0) {
+            monolith.remove(monolith.children[0]);
+        }
+    }
+    blockCount = 0;
+    dailyTotalSize = 0;
+}
+
+function addNewBlock(blockData) {
+    if (!blockData) return;
+    
+    console.log('Adding new block:', blockData.height);
+    
+    const { transactions, height, block_size } = blockData;
+    
+    const blockGroup = new THREE.Group();
+    blockGroup.userData.blockHeight = height;
+    blockGroup.userData.timestamp = blockData.timestamp;
+    
+    let blockTotalSize = parseInt(block_size || '0', 10);
+    if (blockTotalSize === 0 && transactions && transactions.length > 0) {
+        blockTotalSize = transactions.reduce((sum, tx) => sum + (parseInt(tx.data_size || '0', 10) || 0), 0);
+    }
+    
+    blockGroup.userData.totalSize = blockTotalSize;
+    blockGroup.userData.transactions = transactions || [];
+    
+    dailyTotalSize += blockTotalSize;
+    updateStatsDisplay();
+    
+    // Compute cube size
+    const baseCubeSize = blockBaseSize * 0.6;
+    const sizeMultiplier = Math.min(2.0, Math.max(0.5, 1 + Math.log10(Math.max(1, blockTotalSize / 1000000))));
+    const cubeSize = baseCubeSize * sizeMultiplier;
+
+    // Position blocks in helix
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    const spacing = 8;
+    const radius = spacing * Math.sqrt(blockCount);
+    const angle = blockCount * goldenAngle;
+    const x = radius * Math.cos(angle);
+    const z = radius * Math.sin(angle);
+    const y = startYOffset + blockCount * verticalStep;
+    
+    blockGroup.position.set(x, y, z);
+    
+    // Determine content type mix
+    const contentTypeCounts = {};
+    transactions.forEach(tx => {
+        const contentType = getTransactionContentType(tx);
+        contentTypeCounts[contentType] = (contentTypeCounts[contentType] || 0) + 1;
+    });
+
+    const uniqueContentTypes = Object.keys(contentTypeCounts);
+    const isHomogenous = uniqueContentTypes.length === 1;
+    const dominantType = uniqueContentTypes[0] || 'other';
+    blockGroup.userData.dominantType = dominantType; // Still useful for filtering
+    blockGroup.userData.contentTypes = uniqueContentTypes;
+
+    // Default to neutral 'other' style unless block is homogenous
+    const style = isHomogenous ? (contentTypeDataStyles[dominantType] || contentTypeDataStyles.other) : contentTypeDataStyles.other;
+    blockGroup.userData.originalColor = style.cubeColor;
+    blockGroup.userData.originalOutline = style.outlineColor;
+    
+    // Create block mesh
+    const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+    let material;
+    const opacity = 0.35; // Increased slightly for better visibility of symbols
+    if (isHomogenous && dominantType === 'audio') {
+        material = new THREE.MeshPhongMaterial({ map: audioSymbolTexture, transparent: true, opacity });
+    } else if (isHomogenous && dominantType === 'video') {
+        material = new THREE.MeshPhongMaterial({ map: videoSymbolTexture, transparent: true, opacity });
+    } else {
+        material = new THREE.MeshPhongMaterial({
+            color: style.cubeColor,
+            transparent: true,
+            opacity,
+            shininess: 20
+        });
+    }
+    const cube = new THREE.Mesh(cubeGeometry, material);
+    
+    const edges = new THREE.EdgesGeometry(cubeGeometry);
+    const baseCol = new THREE.Color(style.outlineColor);
+    const brightCol = baseCol.clone().lerp(new THREE.Color(0xffffff), 0.4);
+    const lineMaterial = new THREE.LineBasicMaterial({ color: brightCol, transparent: true, opacity: 1.0 });
+    const outline = new THREE.LineSegments(edges, lineMaterial);
+    blockGroup.add(cube);
+    blockGroup.add(outline);
+    
+    cube.userData.transactionCount = transactions.length;
+    cube.userData.dominantType = dominantType;
+    cube.userData.transactions = transactions;
+    cube.userData.blockHeight = height;
+    
+    // Animate block entrance
+    const animateBlockEntrance = () => {
+        const duration = 500;
+        const startTime = Date.now();
+        
+        const animate = () => {
+            const elapsed = Date.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            
+            const easeOutBack = (t) => {
+                const c1 = 1.70158;
+                const c3 = c1 + 1;
+                return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+            };
+            
+            const scale = easeOutBack(progress) * 1.0;
+            cube.scale.set(scale, scale, scale);
+            
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                startPulsingAnimation(cube);
+            }
+        };
+        
+        animate();
+    };
+    
+    setTimeout(animateBlockEntrance, Math.random() * 200);
+    flashOutline(outline);
+    
+    monolith.add(blockGroup);
+    blockCount++;
+
+    // Adjust camera on the first block and every 50 blocks thereafter
+    if (blockCount === 1 || blockCount % 50 === 0) {
+        fitCameraToMonolith();
+    }
+    
+    // Apply active filter to the new block
+    if (activeFilterType) {
+        if (activeFilterType === 'render') {
+            const hasImages = blockGroup.userData.contentTypes.includes('image');
+            if (!hasImages) {
+                blockGroup.visible = false;
+            }
+            // The animate loop will handle applying the render mode to visible blocks.
+        } else {
+            const hasType = blockGroup.userData.contentTypes.includes(activeFilterType);
+            if (hasType) {
+                const style = contentTypeDataStyles[activeFilterType];
+                cube.material.color.set(style.cubeColor);
+                outline.material.color.set(style.outlineColor);
+            } else {
+                blockGroup.visible = false;
+            }
+        }
+    }
+
+    console.log('Block added successfully. Total blocks:', blockCount);
+}
+
+// ---- Camera Management ----
+function fitCameraToMonolith() {
+    if (!camera || !monolith || monolith.children.length === 0) return;
+    cameraMode = 'default';
+
+    const box = new THREE.Box3().setFromObject(monolith);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = camera.fov * (Math.PI / 180);
+    let cameraZ = Math.abs(maxDim / Math.sin(fov / 2)) * 1.2;
+    
+    camera.position.set(center.x, center.y, cameraZ);
+    camera.lookAt(center);
+}
+
+// ---- WebSocket Management ----
+function requestDayData(date) {
+    console.log('Requesting data for date:', date.toISOString());
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        clearMonolith();
+        updateDateDisplay(date);
+        
+        const y = date.getUTCFullYear();
+        const m = date.getUTCMonth();
+        const d = date.getUTCDate();
+        const start = new Date(Date.UTC(y, m, d, 0, 0, 0, 0));
+        const end = new Date(Date.UTC(y, m, d, 23, 59, 59, 999));
+        
+        const request = { type: 'get_day', start: start.toISOString(), end: end.toISOString() };
+        console.log('Sending WebSocket request:', request);
+        ws.send(JSON.stringify(request));
+    } else {
+        console.error('WebSocket not ready');
+    }
+}
+
+function connectWebSocket() {
+    console.log('Connecting to WebSocket server...');
+    
+    if (ws) {
+        ws.close();
+    }
+
+    const wsUrl = 'ws://127.0.0.1:3002';
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+        console.log('WebSocket connected successfully');
+        const commsElement = document.getElementById('comms');
+        if (commsElement) {
+            commsElement.textContent = 'Connected to server';
+            commsElement.style.color = '#4CAF50';
+        }
+        
+        // Request blocks for the contemporary day using UTC
+        const now = new Date();
+        currentlyDisplayedDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        requestDayData(currentlyDisplayedDate);
+    };
+    
+    ws.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            console.log('Received:', message.type);
+            
+            switch (message.type) {
+                case 'newBlock':
+                    addNewBlock(message.data);
+                    break;
+                case 'dayStreamComplete':
+                    console.log('Day stream complete. Finalizing camera position.');
+                    fitCameraToMonolith();
+                    break;
+                case 'loadingStatus':
+                    console.log('Status:', message.message);
+                    break;
+                case 'error':
+                    console.error('Server error:', message.message);
+                    break;
+            }
+        } catch (e) {
+            console.error('Error processing WebSocket message:', e);
+        }
+    };
+    
+    ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        const commsElement = document.getElementById('comms');
+        if (commsElement) {
+            commsElement.textContent = 'Connection error';
+            commsElement.style.color = '#f44336';
+        }
+    };
+    
+    ws.onclose = () => {
+        console.log('WebSocket connection closed');
+        const commsElement = document.getElementById('comms');
+        if (commsElement) {
+            commsElement.textContent = 'Disconnected';
+            commsElement.style.color = '#ff9800';
+        }
+    };
+}
+
+// ---- Mouse Interaction ----
+function onMouseMove(event) {
+    if (event.buttons !== 1) { // Not dragging
+        // Handle hover effects
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(monolith.children, true);
+
+        if (intersects.length > 0) {
+            const intersected = intersects[0].object;
+            if (hoveredBlock !== intersected) {
+                clearHoverState();
+                hoveredBlock = intersected;
+                setBlockHoverVisuals(hoveredBlock, true);
+            }
+        } else {
+            clearHoverState();
+        }
+        return;
+    }
+
+    // Handle dragging
+    const deltaMove = {
+        x: event.clientX - previousMousePosition.x,
+        y: event.clientY - previousMousePosition.y
+    };
+
+    switch (cameraMode) {
+        case 'top':
+            // Pan in top view
+            const panSpeed = 0.5;
+            camera.position.x -= deltaMove.x * panSpeed;
+            camera.position.z += deltaMove.y * panSpeed;
+            break;
+        case 'iso':
+        case 'default':
+        default:
+            // Orbit in iso and default views
+            const rotationSpeed = 0.005;
+            monolith.rotation.y += deltaMove.x * rotationSpeed;
+            const newRotX = camera.rotation.x - deltaMove.y * rotationSpeed;
+            camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, newRotX));
+            break;
+    }
+
+    previousMousePosition = { x: event.clientX, y: event.clientY };
+}
+
+
+function clearHoverState() {
+    if (hoveredBlock) {
+        setBlockHoverVisuals(hoveredBlock, false);
+        hoveredBlock = null;
+    }
+}
+
+function setBlockHoverVisuals(block, isHovered) {
+    // Ensure we are acting on the main cube mesh, not the outline
+    const root = getBlockRoot(block);
+    if (!root) return;
+
+    const cube = root.children.find(child => child.isMesh);
+    if (!cube || !cube.material || typeof cube.material.emissive === 'undefined') return;
+
+    cube.material.emissive.setHex(isHovered ? 0x555555 : 0x000000);
+}
+
+function onMouseDown(event) {
+    isDragging = false;
+    previousMousePosition = { x: event.clientX, y: event.clientY };
+}
+
+function onMouseUp() {
+    isDragging = false;
+}
+
+function onMouseClick(event) {
+    if (isDragging) return;
+
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(monolith.children, true);
+
+    if (intersects.length > 0) {
+        const intersected = intersects[0].object;
+        const blockGroup = getBlockRoot(intersected);
+        if (blockGroup) {
+            openMediaPreview(blockGroup);
+        }
+    }
+}
+
+function getBlockRoot(obj) {
+    let o = obj;
+    while (o && o.parent !== monolith) {
+        o = o.parent;
+    }
+    return o;
+}
+
+function showBlockInfo(group) {
+    const panel = document.getElementById('block-info-panel');
+    if (!panel || !group) return;
+
+    const h = group.userData.blockHeight;
+    const totalSize = group.userData.totalSize;
+    const txs = group.userData.transactions || [];
+
+    document.getElementById('block-height').textContent = h;
+    document.getElementById('block-total-size').textContent = formatBytes(totalSize);
+
+    const txList = document.getElementById('transaction-list');
+    txList.innerHTML = '';
+
+    txs.forEach(tx => {
+        const txDiv = document.createElement('div');
+        txDiv.className = 'transaction-item';
+                txDiv.textContent = `ID: ${tx.id.substring(0, 10)}... | Size: ${formatBytes(tx.data_size)}`;
+        txDiv.style.cursor = 'pointer';
+        txDiv.addEventListener('click', () => openPreview(tx));
+        txList.appendChild(txDiv);
+    });
+
+    panel.style.display = 'block';
+}
+
+function closeBlockInfo() {
+    const panel = document.getElementById('block-info-panel');
+    if (panel) panel.style.display = 'none';
+}
+
+function onMouseWheel(event) {
+    event.preventDefault();
+    if (!camera) return;
+
+    const direction = event.deltaY < 0 ? 1 : -1;
+
+    switch (cameraMode) {
+        case 'top':
+            // Zoom by changing height
+            const zoomSpeedTop = 5;
+            camera.position.y -= direction * zoomSpeedTop;
+            camera.position.y = Math.max(20, Math.min(500, camera.position.y)); // Clamp height
+            break;
+        case 'iso':
+        case 'default':
+        default:
+            // Dolly zoom
+            const zoomSpeedDolly = 0.1;
+            const vector = new THREE.Vector3();
+            camera.getWorldDirection(vector);
+            camera.position.add(vector.multiplyScalar(direction * zoomSpeedDolly * 100));
+            break;
+    }
+}
+
+function openMediaPreview(blockGroup) {
+    const txs = blockGroup.userData.transactions || [];
+    
+    // Treat 'render' mode as the 'image' filter for preview purposes
+    const filter = (activeFilterType === 'render') ? 'image' : activeFilterType;
+    currentPreviewableTxs = txs.filter(tx => {
+        const ct = getTransactionContentType(tx);
+        if (filter && ct !== filter) {
+            return false;
+        }
+        const mime = (tx.tags && (tx.tags['Content-Type'] || tx.tags['content-type'])) || '';
+        return mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/');
+    });
+
+    if (currentPreviewableTxs.length > 0) {
+        currentTxIndex = 0;
+        renderPreview(currentPreviewableTxs[currentTxIndex]);
+        preloadMedia(currentPreviewableTxs); // Preload other media
+    } else {
+        // Fallback to block info if no matching media is found
+        showBlockInfo(blockGroup);
+    }
+}
+
+function renderPreview(tx) {
+    const previewPanel = document.getElementById('content-preview-panel');
+    const display = document.getElementById('content-display');
+    const counter = document.getElementById('tx-counter');
+    if (!display || !previewPanel || !counter) return;
+
+    const ct = (tx.tags && (tx.tags['Content-Type'] || tx.tags['content-type'])) || '';
+    const url = `https://arweave.net/${tx.id}`;
+
+    display.innerHTML = '';
+    counter.textContent = `${currentTxIndex + 1} / ${currentPreviewableTxs.length}`;
+
+    const errorFallback = (msg = 'Preview unavailable') => {
+        display.textContent = msg;
+    };
+
+    if (ct.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '60vh';
+        img.onerror = () => errorFallback();
+        display.appendChild(img);
+    } else if (ct.startsWith('video/')) {
+        const video = document.createElement('video');
+        video.src = url;
+        video.controls = true;
+        video.autoplay = true;
+        video.style.maxWidth = '100%';
+        video.style.maxHeight = '60vh';
+        video.onerror = () => errorFallback();
+        display.appendChild(video);
+    } else if (ct.startsWith('audio/')) {
+        const audio = document.createElement('audio');
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        display.appendChild(audio);
+    }
+
+    previewPanel.style.display = 'block';
+}
+
+
+function closeContentPreview() {
+    const panel = document.getElementById('content-preview-panel');
+    if (panel) panel.style.display = 'none';
+    // Stop any playing media
+    const display = document.getElementById('content-display');
+    if (display && display.firstChild && typeof display.firstChild.pause === 'function') {
+        display.firstChild.pause();
+    }
+}
+
+function preloadMedia(txs) {
+    txs.forEach((tx, index) => {
+        // Don't preload the currently visible one
+        if (index === currentTxIndex) return;
+
+        const ct = (tx.tags && (tx.tags['Content-Type'] || tx.tags['content-type'])) || '';
+        const url = `https://arweave.net/${tx.id}`;
+
+        if (ct.startsWith('image/')) {
+            const img = new Image();
+            img.src = url;
+        } else if (ct.startsWith('video/')) {
+            // Videos are trickier to preload fully, but this helps
+            const video = document.createElement('video');
+            video.preload = 'auto';
+            video.src = url;
+        } else if (ct.startsWith('audio/')) {
+            const audio = document.createElement('audio');
+            audio.preload = 'auto';
+            audio.src = url;
+        }
+    });
+}
+
+function onWindowResize() {
+    if (!camera || !renderer) return;
+    
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function setTopView() {
+    if (!camera) return;
+    cameraMode = 'top';
+    camera.position.set(0, 250, 0);
+    camera.lookAt(monolith.position);
+}
+
+function setIsometricView() {
+    if (!camera) return;
+    cameraMode = 'iso';
+    const distance = 200;
+    camera.position.set(distance, distance, distance);
+    camera.lookAt(monolith.position);
+}
+
+// ---- Main Animation Loop ----
+function animate() {
+    try {
+        if (isRotating) {
+            monolith.rotation.y += 0.001;
+        }
+
+        // On-demand texture loading for render mode
+        if (activeFilterType === 'render') {
+            camera.updateMatrixWorld();
+            cameraMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+            frustum.setFromProjectionMatrix(cameraMatrix);
+
+            monolith.children.forEach(blockGroup => {
+                const cube = blockGroup.children.find(child => child.isMesh);
+                if (!cube) return;
+
+                if (frustum.intersectsObject(cube)) {
+                    // Block is visible
+                    if (!blockGroup.userData.isRendered) {
+                        applyRenderMode(blockGroup);
+                    }
+                } else {
+                    // Block is not visible
+                    if (blockGroup.userData.isRendered) {
+                        disposeRenderedBlock(blockGroup);
+                    }
+                }
+            });
+        }
+        
+        if (renderer && scene && camera) {
+            renderer.render(scene, camera);
+        }
+        requestAnimationFrame(animate);
+    } catch (error) {
+        console.error('Error in animation loop:', error);
+    }
+}
+
+function updateLegend() {
+    const legendItems = document.getElementById('legend-items');
+    legendItems.innerHTML = '';
+
+    // Add Reset button
+    const resetItem = document.createElement('div');
+    resetItem.className = 'legend-item';
+    resetItem.dataset.type = 'reset';
+    resetItem.style.cursor = 'pointer';
+    resetItem.innerHTML = `<span>Reset Filters</span>`;
+    resetItem.addEventListener('click', () => toggleLegendType(null));
+    legendItems.appendChild(resetItem);
+
+    const renderItem = document.createElement('div');
+    renderItem.className = 'legend-item';
+    renderItem.dataset.type = 'render';
+    renderItem.style.cursor = 'pointer';
+    renderItem.style.display = 'none'; // Hide by default
+    renderItem.innerHTML = `<span class="legend-color-box" style="background: linear-gradient(45deg, #ff0000, #00ff00, #0000ff);"></span><span>Render</span>`;
+    renderItem.addEventListener('click', () => toggleLegendType('render'));
+    legendItems.appendChild(renderItem);
+
+    for (const type in contentTypeDataStyles) {
+        const style = contentTypeDataStyles[type];
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.dataset.type = type;
+        item.style.cursor = 'pointer';
+        item.innerHTML = `<span class="legend-color-box" style="border-color: #${style.outlineColor.toString(16).padStart(6, '0')};"></span><span>${style.name}</span>`;
+        
+        item.addEventListener('click', () => {
+            toggleLegendType(type);
+        });
+        legendItems.appendChild(item);
+    }
+    highlightLegendSelection();
+}
+
+function toggleLegendType(type) {
+    if (type === null) { // Handle Reset button
+        activeFilterType = null;
+    } else {
+        activeFilterType = (activeFilterType === type) ? null : type;
+    }
+    applySceneFilter();
+    highlightLegendSelection();
+}
+
+function applySceneFilter() {
+    monolith.children.forEach(blockGroup => {
+        const cube = blockGroup.children.find(child => child.isMesh);
+        const outline = blockGroup.children.find(child => child.isLineSegments);
+        if (!cube || !outline) return;
+
+        // STAGE 1: CLEANUP
+        // Always dispose of rendered materials if they exist.
+        if (blockGroup.userData.isRendered) {
+            disposeRenderedBlock(blockGroup);
+        }
+        // Ensure material is a single object, not an array, before proceeding.
+        if (Array.isArray(cube.material)) {
+             cube.material = new THREE.MeshPhongMaterial({
+                color: blockGroup.userData.originalColor,
+                transparent: true, opacity: 0.35
+            });
+        }
+        
+        // CRITICAL: When resetting filters, ensure isRendered is completely cleared
+        if (activeFilterType !== 'render' && blockGroup.userData.isRendered) {
+            blockGroup.userData.isRendered = false;
+        }
+
+        // STAGE 2: APPLY NEW FILTER
+        if (activeFilterType === 'render') {
+            const hasImages = blockGroup.userData.contentTypes.includes('image');
+            blockGroup.visible = hasImages;
+            // The animate loop will handle the actual rendering.
+        } else if (activeFilterType) {
+            const hasType = blockGroup.userData.contentTypes.includes(activeFilterType);
+            blockGroup.visible = hasType;
+            if (hasType) {
+                const style = contentTypeDataStyles[activeFilterType];
+                cube.material.color.set(style.cubeColor);
+                outline.material.color.set(style.outlineColor);
+            }
+        } else {
+            // No filter active: reset to original state.
+            blockGroup.visible = true;
+            cube.material.color.set(blockGroup.userData.originalColor);
+            outline.material.color.set(blockGroup.userData.originalOutline);
+        }
+
+        // STAGE 3: FINAL UI STATE
+        outline.visible = activeFilterType !== 'render';
+    });
+}
+
+function disposeRenderedBlock(blockGroup) {
+    const cube = blockGroup.children.find(child => child.isMesh);
+    if (!cube || !blockGroup.userData.isRendered) return;
+
+    if (Array.isArray(cube.material)) {
+        cube.material.forEach(mat => {
+            if (mat.map) {
+                mat.map.dispose();
+            }
+            mat.dispose();
+        });
+    } else if (cube.material.map) {
+        cube.material.map.dispose();
+        cube.material.dispose();
+    }
+
+    // Restore original material
+    cube.material = new THREE.MeshPhongMaterial({
+        color: blockGroup.userData.originalColor,
+        transparent: true,
+        opacity: 0.35
+    });
+
+    blockGroup.userData.isRendered = false;
+}
+
+const tintedImageShader = {
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform sampler2D uTexture;
+        varying vec2 vUv;
+        void main() {
+            vec4 texColor = texture2D(uTexture, vUv);
+            // Convert to grayscale (luminance)
+            float gray = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+            // Output the grayscale color with transparency
+            gl_FragColor = vec4(vec3(gray), 0.35);
+        }
+    `
+};
+
+async function applyRenderMode(blockGroup) {
+    if (blockGroup.userData.isRendered) return; // Already rendering or rendered
+    blockGroup.userData.isRendered = true;
+
+    const cube = blockGroup.children.find(child => child.isMesh);
+    if (!cube) return;
+
+    const imageTxs = blockGroup.userData.transactions.filter(tx => 
+        ((tx.tags && (tx.tags['Content-Type'] || tx.tags['content-type'])) || '').startsWith('image/')
+    );
+
+    if (imageTxs.length > 0) {
+        const imageLoader = new THREE.ImageLoader();
+        imageLoader.setCrossOrigin('');
+        const materials = [];
+        const promises = [];
+
+        for (let i = 0; i < 6; i++) {
+            const tx = imageTxs[i % imageTxs.length];
+            const url = `https://arweave.net/${tx.id}`;
+
+            const promise = new Promise(async (resolve) => {
+                try {
+                    const image = await imageLoader.loadAsync(url);
+                    const canvas = document.createElement('canvas');
+                    const textureSize = 256;
+                    canvas.width = textureSize;
+                    canvas.height = textureSize;
+                    const context = canvas.getContext('2d');
+                    context.drawImage(image, 0, 0, textureSize, textureSize);
+                    
+                    const texture = new THREE.CanvasTexture(canvas);
+
+                    materials[i] = new THREE.ShaderMaterial({
+                        uniforms: {
+                            uTexture: { value: texture }
+                        },
+                        vertexShader: tintedImageShader.vertexShader,
+                        fragmentShader: tintedImageShader.fragmentShader,
+                        transparent: true
+                    });
+                } catch (error) {
+                    console.error(`Failed to load or process image: ${url}`, error);
+                    materials[i] = new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.35 });
+                }
+                resolve();
+            });
+            promises.push(promise);
+        }
+
+        await Promise.all(promises);
+        cube.material = materials;
+
+    } else {
+        cube.material = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.35 });
+    }
+}
+
+function highlightLegendSelection() {
+    const items = document.querySelectorAll('.legend-item');
+    const renderItem = document.querySelector('.legend-item[data-type="render"]');
+
+    // Show Render button only when Image filter is active
+    if (renderItem) {
+        renderItem.style.display = (activeFilterType === 'image' || activeFilterType === 'render') ? 'flex' : 'none';
+    }
+
+    items.forEach(item => {
+        if (!activeFilterType || item.dataset.type === activeFilterType) {
+            item.classList.remove('inactive');
+        } else {
+            item.classList.add('inactive');
+        }
+    });
+
+    // If a non-image filter is selected, ensure render mode is turned off
+    if (activeFilterType !== 'image' && activeFilterType !== 'render' && activeFilterType !== null) {
+        // This logic is handled in toggleLegendType now
+    }
+}
+
+// ---- Initialization ----
+function init() {
+    console.log('Initializing Arweave Block Explorer...');
+    createSymbolTextures();
+    
+    // Create scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a12);
+    
+    // Create camera
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 100);
+    
+    // Create renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    
+    // Add renderer to DOM
+    const container = document.getElementById('three-container');
+    if (container) {
+        container.appendChild(renderer.domElement);
+    }
+    
+    // Add lights
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(1, 1, 1).normalize();
+    scene.add(directionalLight);
+    
+    // Initialize monolith for blocks
+    monolith = new THREE.Group();
+    scene.add(monolith);
+    
+    // Initialize raycaster and mouse
+    raycaster = new THREE.Raycaster();
+    mouse = new THREE.Vector2();
+    
+    // Add event listeners (only window-level events that don't depend on DOM elements)
+    window.addEventListener('resize', onWindowResize, false);
+    window.addEventListener('mousemove', onMouseMove, false);
+    window.addEventListener('mousedown', onMouseDown, false);
+    window.addEventListener('mouseup', onMouseUp, false);
+    window.addEventListener('click', onMouseClick, false);
+    window.addEventListener('wheel', onMouseWheel, { passive: false });
+
+    // Initial Legend Update
+    updateLegend();
+    
+    // Start animation loop
+    animate();
+    
+    console.log('Scene initialized successfully');
+    
+    // Connect to WebSocket
+    connectWebSocket();
+}
+
+// ---- DOM Ready ----
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, initializing application...');
+    init();
+
+    // Attach ALL DOM element event listeners after the DOM is fully loaded to prevent race conditions
+    document.getElementById('close-block-info').addEventListener('click', closeBlockInfo);
+    document.getElementById('close-content-preview').addEventListener('click', closeContentPreview);
+
+    document.getElementById('prev-day').addEventListener('click', () => {
+        currentlyDisplayedDate.setDate(currentlyDisplayedDate.getDate() - 1);
+        requestDayData(currentlyDisplayedDate);
+    });
+
+    document.getElementById('next-day').addEventListener('click', () => {
+        currentlyDisplayedDate.setDate(currentlyDisplayedDate.getDate() + 1);
+        requestDayData(currentlyDisplayedDate);
+    });
+
+    document.getElementById('toggle-rotation').addEventListener('click', () => {
+        isRotating = !isRotating;
+        document.getElementById('toggle-rotation').textContent = isRotating ? 'STOP ROTATION' : 'START ROTATION';
+    });
+
+    document.getElementById('top-view').addEventListener('click', setTopView);
+    document.getElementById('reset-view').addEventListener('click', () => {
+        fitCameraToMonolith();
+    });
+    document.getElementById('iso-view').addEventListener('click', () => {
+        setIsometricView();
+    });
+
+    document.getElementById('prev-tx-btn').addEventListener('click', () => {
+        if (currentPreviewableTxs.length > 0) {
+            currentTxIndex = (currentTxIndex - 1 + currentPreviewableTxs.length) % currentPreviewableTxs.length;
+            renderPreview(currentPreviewableTxs[currentTxIndex]);
+        }
+    });
+
+    document.getElementById('next-tx-btn').addEventListener('click', () => {
+        if (currentPreviewableTxs.length > 0) {
+            currentTxIndex = (currentTxIndex + 1) % currentPreviewableTxs.length;
+            renderPreview(currentPreviewableTxs[currentTxIndex]);
+        }
+    });
+});

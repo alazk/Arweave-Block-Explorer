@@ -1,0 +1,43 @@
+{
+  "name": "arweave-block-explorer",
+  "version": "4.4.0",
+  "description": "An immersive 3D data sculpture that transforms the Arweave blockchain into a living, interactive visualization",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "serve": "python -m http.server 8000",
+    "serve-node": "npx http-server public -p 8000"
+  },
+  "keywords": [
+    "arweave",
+    "blockchain",
+    "3d-visualization",
+    "threejs",
+    "webgl",
+    "data-art",
+    "interactive",
+    "real-time",
+    "websockets",
+    "permanent-web"
+  ],
+  "author": "alazk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alazk/Arweave-Block-Explorer.git"
+  },
+  "homepage": "https://github.com/alazk/Arweave-Block-Explorer",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "express": "^4.21.2",
+    "three": "^0.158.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
