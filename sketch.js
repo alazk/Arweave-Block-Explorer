@@ -1,11 +1,8 @@
 import * as THREE from 'three';
 
-console.log('🚀 Arweave Block Explorer - v4.5: Sticky Render Bug Fixed');
-
 // ---- Global Variables ----
 let scene, camera, renderer, raycaster, mouse;
 let monolith, ws = null;
-let tooltip = null, hoveredBlock = null;
 let isDragging = false, previousMousePosition = { x: 0, y: 0 };
 let isRotating = false;
 let cameraMode = 'default'; // 'default', 'top', 'iso'
@@ -13,7 +10,6 @@ let currentlyDisplayedDate = new Date();
 let currentPreviewableTxs = [];
 let currentTxIndex = 0;
 let audioSymbolTexture, videoSymbolTexture;
-const textureCache = {};
 const frustum = new THREE.Frustum();
 const cameraMatrix = new THREE.Matrix4();
 let activeFilterType = null;
@@ -364,7 +360,8 @@ function connectWebSocket() {
         ws.close();
     }
 
-    const wsUrl = 'ws://127.0.0.1:3002';
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${protocol}://${window.location.host}`;
     ws = new WebSocket(wsUrl);
     
     ws.onopen = () => {

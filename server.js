@@ -6,11 +6,11 @@ const path = require('path');
 const app = express();
 const port = parseInt(process.env.PORT || '3002', 10);
 const server = http.createServer(app);
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname)));
 
 // Explicit root and health endpoints for Render
 app.get('/health', (_req, res) => res.status(200).send('ok'));
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const wss = new WebSocket.Server({ noServer: true });
 // Scan from current head backward for a fixed number of blocks, collecting recent media
 async function streamRecentTransactionsQuick(ws, blockScanLimit = 750, perTypeLimit = 250) {
@@ -483,7 +483,7 @@ server.on('upgrade', (request, socket, head) => {
 
 // SPA fallback: serve index.html for any other GET to avoid 404s on refresh/deep links
 app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 server.listen(port, () => {
