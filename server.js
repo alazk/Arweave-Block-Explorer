@@ -2,16 +2,51 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const axios = require('axios');
-const path = require('path');
+const cors = require('cors');
 const app = express();
 const port = parseInt(process.env.PORT || '3002', 10);
 const server = http.createServer(app);
-app.use(express.static(path.join(__dirname)));
 
-// Explicit root and health endpoints for Render
-app.get('/health', (_req, res) => res.status(200).send('ok'));
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// CORS configuration for Arweave gateways and ArNS domains
+const corsOptions = {
+    origin: [
+        // Arweave gateways
+        'https://arweave.net',
+        'https://ar-io.net',
+        'https://g8way.io',
+        'https://blockstream.arweave.net',
+        // Local
+        'http://localhost:3002',
+        'http://localhost:8002',
+        'http://127.0.0.1:3002',
+        'http://127.0.0.1:8002'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
+// Health check endpoint for Render
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// API info endpoint
+app.get('/api/info', (_req, res) => {
+    res.json({
+        name: 'Arweave Block Explorer API',
+        version: '1.0.0',
+        description: 'WebSocket API for real-time Arweave blockchain data',
+        endpoints: {
+            health: '/health',
+            websocket: 'ws://[host]/ws'
+        }
+    });
+});
+
 const wss = new WebSocket.Server({ noServer: true });
+
 // Scan from current head backward for a fixed number of blocks, collecting recent media
 async function streamRecentTransactionsQuick(ws, blockScanLimit = 750, perTypeLimit = 250) {
     try {
@@ -479,11 +514,6 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
     });
-});
-
-// SPA fallback: serve index.html for any other GET to avoid 404s on refresh/deep links
-app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 server.listen(port, () => {
