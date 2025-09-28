@@ -30,6 +30,7 @@
   "homepage": "https://github.com/alazk/Arweave-Block-Explorer",
   "dependencies": {
     "axios": "^1.12.2",
+    "cors": "^2.8.5",
     "express": "^4.21.2",
     "three": "^0.158.0",
     "ws": "^8.18.3"
