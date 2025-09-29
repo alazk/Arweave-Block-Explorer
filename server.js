@@ -2,51 +2,16 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const axios = require('axios');
-const cors = require('cors');
+const path = require('path');
 const app = express();
 const port = parseInt(process.env.PORT || '3002', 10);
 const server = http.createServer(app);
+app.use(express.static(path.join(__dirname)));
 
-// CORS configuration for Arweave gateways and ArNS domains
-const corsOptions = {
-    origin: [
-        // Arweave gateways
-        'https://arweave.net',
-        'https://ar-io.net',
-        'https://g8way.io',
-        'https://blockstream.arweave.net',
-        // Local
-        'http://localhost:3002',
-        'http://localhost:8002',
-        'http://127.0.0.1:3002',
-        'http://127.0.0.1:8002'
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-};
-
-app.use(cors(corsOptions));
-app.use(express.json());
-
-// Health check endpoint for Render
-app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
-
-// API info endpoint
-app.get('/api/info', (_req, res) => {
-    res.json({
-        name: 'Arweave Block Explorer API',
-        version: '1.0.0',
-        description: 'WebSocket API for real-time Arweave blockchain data',
-        endpoints: {
-            health: '/health',
-            websocket: 'ws://[host]/ws'
-        }
-    });
-});
-
+// Explicit root and health endpoints for Render
+app.get('/health', (_req, res) => res.status(200).send('ok'));
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const wss = new WebSocket.Server({ noServer: true });
-
 // Scan from current head backward for a fixed number of blocks, collecting recent media
 async function streamRecentTransactionsQuick(ws, blockScanLimit = 750, perTypeLimit = 250) {
     try {
@@ -187,7 +152,7 @@ async function fetchAllBlockTransactions(height) {
         after = lastEdge?.cursor || null;
         attempts++;
         // Be polite to the endpoint
-        if (hasNextPage) await new Promise(r => setTimeout(r, 100));
+        if (hasNextPage) await new Promise(r => setTimeout(r, 40));
     }
     return edges;
 }
@@ -398,7 +363,7 @@ async function streamBlocksForDay(ws, date, streamControl, visualOnly = false, e
                 }
 
                 currentHeight++;
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, 150));
 
             } catch (error) {
                 console.error(`Failed to process block ${currentHeight}:`, error.message);
@@ -516,6 +481,11 @@ server.on('upgrade', (request, socket, head) => {
     });
 });
 
+// SPA fallback: serve index.html for any other GET to avoid 404s on refresh/deep links
+app.get('*', (_req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 server.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
+    console.log(`Arweave Block Stream server listening on http://localhost:${port}`);
 });
