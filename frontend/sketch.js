@@ -415,8 +415,9 @@ function connectWebSocket() {
         ws.close();
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${protocol}://${window.location.host}`;
+    // Use the backend URL from config instead of current location
+    const wsUrl = 'wss://arweave-block-explorer.onrender.com';
+    console.log('Connecting to backend:', wsUrl);
     ws = new WebSocket(wsUrl);
     
     ws.onopen = () => {
