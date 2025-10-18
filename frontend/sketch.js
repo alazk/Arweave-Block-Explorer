@@ -1,11 +1,8 @@
 import * as THREE from 'three';
 
-console.log('🚀 Arweave Block Explorer - v4.5: Sticky Render Bug Fixed');
-
 // ---- Global Variables ----
 let scene, camera, renderer, raycaster, mouse;
 let monolith, ws = null;
-let tooltip = null, hoveredBlock = null;
 let isDragging = false, previousMousePosition = { x: 0, y: 0 };
 let isRotating = false;
 let cameraMode = 'default'; // 'default', 'top', 'iso'
@@ -13,10 +10,19 @@ let currentlyDisplayedDate = new Date();
 let currentPreviewableTxs = [];
 let currentTxIndex = 0;
 let audioSymbolTexture, videoSymbolTexture;
-const textureCache = {};
 const frustum = new THREE.Frustum();
 const cameraMatrix = new THREE.Matrix4();
 let activeFilterType = null;
+const CAMERA_PAN_STEP = 2; // vertical pan amount for keyboard
+
+// UI state
+let tooltip = null, hoveredBlock = null;
+
+// Orbit state for isometric camera interaction
+let orbitTarget = new THREE.Vector3(0, 0, 0);
+let orbitYaw = 0;     // horizontal angle around target (radians)
+let orbitPitch = 0;   // vertical angle (radians), clamp to avoid flipping
+let orbitRadius = 100; // distance from target
 
 // Block stats
 const blockBaseSize = 25;
@@ -67,6 +73,39 @@ function createSymbolTextures() {
     videoSymbolTexture = new THREE.CanvasTexture(videoCanvas);
 }
 
+// ---- Keyboard Controls ----
+function onKeyDown(e) {
+    if (!camera) return;
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        camera.position.y += CAMERA_PAN_STEP;
+        orbitTarget.y += CAMERA_PAN_STEP;
+        camera.lookAt(orbitTarget);
+    } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        camera.position.y -= CAMERA_PAN_STEP;
+        orbitTarget.y -= CAMERA_PAN_STEP;
+        camera.lookAt(orbitTarget);
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        teleportToCenter();
+    } else if (e.key === 'Escape' || e.key === 'Esc') {
+        e.preventDefault();
+        closeBlockInfo();
+        closeContentPreview();
+    }
+}
+
+function teleportToCenter() {
+    if (!monolith || monolith.children.length === 0 || !camera) return;
+    const box = new THREE.Box3().setFromObject(monolith);
+    const center = box.getCenter(new THREE.Vector3());
+    // Place camera at center and look slightly forward along +Z to avoid zero-length look vector
+    camera.position.set(center.x, center.y, center.z);
+    orbitTarget.set(center.x, center.y, center.z + 1);
+    camera.lookAt(orbitTarget);
+}
+
 // ---- Helper Functions ----
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -78,20 +117,23 @@ function formatBytes(bytes) {
 
 function getTransactionContentType(tx) {
     if (!tx || !tx.tags) return 'other';
-    
-    const contentTypeTag = tx.tags.find ? 
-        tx.tags.find(tag => tag.name === 'Content-Type') :
-        tx.tags['Content-Type'];
-    
-    if (!contentTypeTag) return 'other';
-    
-    const contentTypeValue = (typeof contentTypeTag === 'string') ? contentTypeTag : contentTypeTag.value;
-    if (typeof contentTypeValue !== 'string') return 'other';
 
-    if (contentTypeValue.startsWith('image/')) return 'image';
-    if (contentTypeValue.startsWith('video/')) return 'video';
-    if (contentTypeValue.startsWith('audio/')) return 'audio';
-    return 'other';
+    if (Array.isArray(tx.tags) || typeof tx.tags.find === 'function') {
+        const t = tx.tags.find(tag => tag.name === 'Content-Type' || tag.name === 'content-type');
+        const v = t && (typeof t.value === 'string' ? t.value : null);
+        if (!v) return 'other';
+        if (v.startsWith('image/')) return 'image';
+        if (v.startsWith('video/')) return 'video';
+        if (v.startsWith('audio/')) return 'audio';
+        return 'other';
+    } else {
+        const v = tx.tags['Content-Type'] || tx.tags['content-type'] || '';
+        if (typeof v !== 'string') return 'other';
+        if (v.startsWith('image/')) return 'image';
+        if (v.startsWith('video/')) return 'video';
+        if (v.startsWith('audio/')) return 'audio';
+        return 'other';
+    }
 }
 
 function updateStatsDisplay() {
@@ -106,10 +148,10 @@ function updateStatsDisplay() {
 }
 
 function updateDateDisplay(date) {
-    const dateElement = document.getElementById('date-display');
-    if (dateElement && date) {
+    const dateText = document.getElementById('date-text');
+    if (dateText && date) {
         const options = { year: 'numeric', month: 'long', day: 'numeric' };
-        dateElement.textContent = date.toLocaleDateString('en-US', options);
+        dateText.textContent = date.toLocaleDateString('en-US', options);
     }
 }
 
@@ -291,8 +333,8 @@ function addNewBlock(blockData) {
     monolith.add(blockGroup);
     blockCount++;
 
-    // Adjust camera on the first block and every 50 blocks thereafter
-    if (blockCount === 1 || blockCount % 50 === 0) {
+    // Adjust camera on the first block and every 100 blocks thereafter
+    if (blockCount === 1 || blockCount % 100 === 0) {
         fitCameraToMonolith();
     }
     
@@ -303,7 +345,8 @@ function addNewBlock(blockData) {
             if (!hasImages) {
                 blockGroup.visible = false;
             }
-            // The animate loop will handle applying the render mode to visible blocks.
+            // Hide outline during render mode; animate loop will handle materials
+            outline.visible = false;
         } else {
             const hasType = blockGroup.userData.contentTypes.includes(activeFilterType);
             if (hasType) {
@@ -334,6 +377,14 @@ function fitCameraToMonolith() {
     
     camera.position.set(center.x, center.y, cameraZ);
     camera.lookAt(center);
+
+    // Reset orbit state to match new camera placement
+    orbitTarget.copy(center);
+    const offset = new THREE.Vector3().subVectors(camera.position, orbitTarget);
+    orbitRadius = Math.max(10, offset.length());
+    orbitYaw = Math.atan2(offset.x, offset.z);
+    const horizLen = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+    orbitPitch = Math.atan2(offset.y, horizLen);
 }
 
 // ---- WebSocket Management ----
@@ -364,7 +415,9 @@ function connectWebSocket() {
         ws.close();
     }
 
-    const wsUrl = 'ws://127.0.0.1:3002';
+    // Use the backend URL from config instead of current location
+    const wsUrl = 'wss://arweave-block-explorer.onrender.com';
+    console.log('Connecting to backend:', wsUrl);
     ws = new WebSocket(wsUrl);
     
     ws.onopen = () => {
@@ -435,7 +488,9 @@ function onMouseMove(event) {
         const intersects = raycaster.intersectObjects(monolith.children, true);
 
         if (intersects.length > 0) {
-            const intersected = intersects[0].object;
+            // Prefer mesh hit to avoid selecting outlines
+            const meshHit = intersects.find(h => h.object && h.object.isMesh);
+            const intersected = (meshHit ? meshHit.object : intersects[0].object);
             if (hoveredBlock !== intersected) {
                 clearHoverState();
                 hoveredBlock = intersected;
@@ -454,21 +509,46 @@ function onMouseMove(event) {
     };
 
     switch (cameraMode) {
-        case 'top':
-            // Pan in top view
+        case 'top': {
+            // Pan in top view: move camera and target together on XZ plane
             const panSpeed = 0.5;
-            camera.position.x -= deltaMove.x * panSpeed;
-            camera.position.z += deltaMove.y * panSpeed;
+            const dx = -deltaMove.x * panSpeed;
+            const dz =  deltaMove.y * panSpeed;
+            camera.position.x += dx;
+            camera.position.z += dz;
+            orbitTarget.x += dx;
+            orbitTarget.z += dz;
+            camera.lookAt(orbitTarget);
             break;
-        case 'iso':
+        }
+        case 'iso': {
+            // True orbit around target using spherical coordinates
+            const yawSpeed = 0.005;
+            const pitchSpeed = 0.005;
+            orbitYaw += deltaMove.x * yawSpeed;
+            orbitPitch -= deltaMove.y * pitchSpeed;
+            const maxPitch = THREE.MathUtils.degToRad(89);
+            orbitPitch = Math.max(-maxPitch, Math.min(maxPitch, orbitPitch));
+            const cosPitch = Math.cos(orbitPitch);
+            const sinPitch = Math.sin(orbitPitch);
+            const sinYaw = Math.sin(orbitYaw);
+            const cosYaw = Math.cos(orbitYaw);
+            const px = orbitTarget.x + orbitRadius * sinYaw * cosPitch;
+            const py = orbitTarget.y + orbitRadius * sinPitch;
+            const pz = orbitTarget.z + orbitRadius * cosYaw * cosPitch;
+            camera.position.set(px, py, pz);
+            camera.lookAt(orbitTarget);
+            break;
+        }
         case 'default':
-        default:
-            // Orbit in iso and default views
+        default: {
+            // Rotate sculpture horizontally; adjust vertical viewing with camera pitch
             const rotationSpeed = 0.005;
             monolith.rotation.y += deltaMove.x * rotationSpeed;
             const newRotX = camera.rotation.x - deltaMove.y * rotationSpeed;
             camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, newRotX));
             break;
+        }
     }
 
     previousMousePosition = { x: event.clientX, y: event.clientY };
@@ -488,9 +568,25 @@ function setBlockHoverVisuals(block, isHovered) {
     if (!root) return;
 
     const cube = root.children.find(child => child.isMesh);
-    if (!cube || !cube.material || typeof cube.material.emissive === 'undefined') return;
+    if (!cube || !cube.material) return;
 
-    cube.material.emissive.setHex(isHovered ? 0x555555 : 0x000000);
+    if (typeof cube.material.emissive !== 'undefined') {
+        cube.material.emissive.setHex(isHovered ? 0x555555 : 0x000000);
+    }
+
+    // In render mode, outlines are hidden globally. Temporarily show a white outline for hovered block.
+    const outline = root.children.find(child => child.isLineSegments);
+    if (outline) {
+        if (activeFilterType === 'render') {
+            if (isHovered) {
+                outline.visible = true;
+                if (outline.material && outline.material.color) outline.material.color.set(0xFFFFFF);
+                if (outline.material) { outline.material.transparent = true; outline.material.opacity = 1.0; }
+            } else {
+                outline.visible = false;
+            }
+        }
+    }
 }
 
 function onMouseDown(event) {
@@ -512,10 +608,17 @@ function onMouseClick(event) {
     const intersects = raycaster.intersectObjects(monolith.children, true);
 
     if (intersects.length > 0) {
-        const intersected = intersects[0].object;
+        // Prefer hits on meshes to avoid selecting edges/lines first
+        const meshHit = intersects.find(hit => hit.object && hit.object.isMesh);
+        const intersected = (meshHit ? meshHit.object : intersects[0].object);
         const blockGroup = getBlockRoot(intersected);
         if (blockGroup) {
-            openMediaPreview(blockGroup);
+            // Default: open Preview. Modifier-click opens Block Info.
+            if (event.ctrlKey || event.metaKey || event.altKey) {
+                showBlockInfo(blockGroup);
+            } else {
+                openMediaPreview(blockGroup);
+            }
         }
     }
 }
@@ -545,9 +648,24 @@ function showBlockInfo(group) {
     txs.forEach(tx => {
         const txDiv = document.createElement('div');
         txDiv.className = 'transaction-item';
-                txDiv.textContent = `ID: ${tx.id.substring(0, 10)}... | Size: ${formatBytes(tx.data_size)}`;
+        const shortId = `${tx.id.substring(0, 10)}...`;
+        const viewblockUrl = `https://viewblock.io/arweave/tx/${tx.id}`;
+        txDiv.innerHTML = `ID: ${shortId} | Size: ${formatBytes(tx.data_size)} ` +
+            `<a href="${viewblockUrl}" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;">Viewblock</a>`;
         txDiv.style.cursor = 'pointer';
-        txDiv.addEventListener('click', () => openPreview(tx));
+        // Clicking a transaction opens preview and replaces any existing preview
+        txDiv.addEventListener('click', () => {
+            // Build media list for this block
+            const mediaTxs = txs.filter(t => {
+                const mime = (t.tags && (t.tags['Content-Type'] || t.tags['content-type'])) || '';
+                return typeof mime === 'string' && (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/'));
+            });
+            currentPreviewableTxs = mediaTxs;
+            currentTxIndex = Math.max(0, mediaTxs.findIndex(t => t.id === tx.id));
+            renderPreview(mediaTxs[currentTxIndex] || tx);
+            // Show preview panel (renderPreview already does) and keep info panel hidden
+            panel.style.display = 'none';
+        });
         txList.appendChild(txDiv);
     });
 
@@ -566,21 +684,38 @@ function onMouseWheel(event) {
     const direction = event.deltaY < 0 ? 1 : -1;
 
     switch (cameraMode) {
-        case 'top':
+        case 'top': {
             // Zoom by changing height
             const zoomSpeedTop = 5;
             camera.position.y -= direction * zoomSpeedTop;
-            camera.position.y = Math.max(20, Math.min(500, camera.position.y)); // Clamp height
+            camera.position.y = Math.max(5, Math.min(500, camera.position.y));
+            camera.lookAt(orbitTarget);
             break;
-        case 'iso':
+        }
+        case 'iso': {
+            // Zoom by changing orbit radius, keep looking at target
+            const zoomSpeedOrbit = 5;
+            orbitRadius = Math.max(10, orbitRadius - direction * zoomSpeedOrbit);
+            const cosPitch = Math.cos(orbitPitch);
+            const sinPitch = Math.sin(orbitPitch);
+            const sinYaw = Math.sin(orbitYaw);
+            const cosYaw = Math.cos(orbitYaw);
+            const px = orbitTarget.x + orbitRadius * sinYaw * cosPitch;
+            const py = orbitTarget.y + orbitRadius * sinPitch;
+            const pz = orbitTarget.z + orbitRadius * cosYaw * cosPitch;
+            camera.position.set(px, py, pz);
+            camera.lookAt(orbitTarget);
+            break;
+        }
         case 'default':
-        default:
+        default: {
             // Dolly zoom
             const zoomSpeedDolly = 0.1;
             const vector = new THREE.Vector3();
             camera.getWorldDirection(vector);
             camera.position.add(vector.multiplyScalar(direction * zoomSpeedDolly * 100));
             break;
+        }
     }
 }
 
@@ -602,8 +737,12 @@ function openMediaPreview(blockGroup) {
         currentTxIndex = 0;
         renderPreview(currentPreviewableTxs[currentTxIndex]);
         preloadMedia(currentPreviewableTxs); // Preload other media
+        // Hide Block Info panel if open when showing preview
+        const infoPanel = document.getElementById('block-info-panel');
+        if (infoPanel) infoPanel.style.display = 'none';
     } else {
         // Fallback to block info if no matching media is found
+        console.log('No media found for block; opening Block Info. txs length =', txs.length);
         showBlockInfo(blockGroup);
     }
 }
@@ -616,9 +755,18 @@ function renderPreview(tx) {
 
     const ct = (tx.tags && (tx.tags['Content-Type'] || tx.tags['content-type'])) || '';
     const url = `https://arweave.net/${tx.id}`;
+    const viewblockUrl = `https://viewblock.io/arweave/tx/${tx.id}`;
 
     display.innerHTML = '';
     counter.textContent = `${currentTxIndex + 1} / ${currentPreviewableTxs.length}`;
+
+    // Set title with Viewblock link
+    const title = document.getElementById('content-title');
+    if (title) {
+        const shortId = `${tx.id.substring(0, 10)}...`;
+        title.innerHTML = `Transaction: ${shortId} ` +
+            `<a href="${viewblockUrl}" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;">Viewblock</a>`;
+    }
 
     const errorFallback = (msg = 'Preview unavailable') => {
         display.textContent = msg;
@@ -649,6 +797,43 @@ function renderPreview(tx) {
     }
 
     previewPanel.style.display = 'block';
+}
+
+// ---- Draggable UI ----
+function makeDraggable(panelEl, handleEl) {
+    if (!panelEl || !handleEl) return;
+    panelEl.style.position = 'absolute';
+    let dragging = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+    const onMouseDown = (e) => {
+        dragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = panelEl.getBoundingClientRect();
+        // initialize left/top if not set
+        if (!panelEl.style.left) panelEl.style.left = rect.left + 'px';
+        if (!panelEl.style.top) panelEl.style.top = rect.top + 'px';
+        startLeft = parseInt(panelEl.style.left, 10) || rect.left;
+        startTop = parseInt(panelEl.style.top, 10) || rect.top;
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        e.preventDefault();
+    };
+    const onMouseMove = (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        panelEl.style.left = (startLeft + dx) + 'px';
+        panelEl.style.top = (startTop + dy) + 'px';
+    };
+    const onMouseUp = () => {
+        dragging = false;
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    };
+    handleEl.style.cursor = 'move';
+    handleEl.addEventListener('mousedown', onMouseDown);
 }
 
 
@@ -684,6 +869,27 @@ function preloadMedia(txs) {
             audio.src = url;
         }
     });
+
+    // If entering render mode, kickstart some immediate renders for visible blocks
+    if (activeFilterType === 'render' && camera) {
+        try {
+            camera.updateMatrixWorld();
+            cameraMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+            frustum.setFromProjectionMatrix(cameraMatrix);
+            let kickBudget = 12;
+            for (let i = 0; i < monolith.children.length && kickBudget > 0; i++) {
+                const blockGroup = monolith.children[i];
+                const cube = blockGroup.children.find(child => child.isMesh);
+                if (!cube || !blockGroup.visible) continue;
+                if (frustum.intersectsObject(cube) && !blockGroup.userData.isRendered) {
+                    applyRenderMode(blockGroup);
+                    kickBudget--;
+                }
+            }
+        } catch (e) {
+            console.warn('Kickstart render failed:', e);
+        }
+    }
 }
 
 function onWindowResize() {
@@ -695,18 +901,39 @@ function onWindowResize() {
 }
 
 function setTopView() {
-    if (!camera) return;
+    if (!camera || !monolith) return;
     cameraMode = 'top';
-    camera.position.set(0, 250, 0);
-    camera.lookAt(monolith.position);
+    const box = new THREE.Box3().setFromObject(monolith);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = camera.fov * (Math.PI / 180);
+    const distance = Math.abs(maxDim / Math.sin(fov / 2)) * 1.1;
+    camera.position.set(center.x, center.y + distance, center.z);
+    orbitTarget.copy(center);
+    camera.lookAt(orbitTarget);
 }
 
 function setIsometricView() {
-    if (!camera) return;
+    if (!camera || !monolith || monolith.children.length === 0) return;
     cameraMode = 'iso';
-    const distance = 200;
-    camera.position.set(distance, distance, distance);
-    camera.lookAt(monolith.position);
+    // Classic isometric: ~35° elevation and 45° yaw relative to scene bounds
+    const box = new THREE.Box3().setFromObject(monolith);
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const dir = new THREE.Vector3(1, 1, 1).normalize();
+    const fovRad = THREE.MathUtils.degToRad(camera.fov);
+    const distance = (sphere.radius / Math.sin(fovRad / 2)) * 1.15;
+    const targetPos = dir.multiplyScalar(distance).add(sphere.center);
+    camera.position.copy(targetPos);
+    orbitTarget.copy(sphere.center);
+    camera.lookAt(orbitTarget);
+
+    // Initialize orbit parameters from current camera pose
+    const offset = new THREE.Vector3().subVectors(camera.position, orbitTarget);
+    orbitRadius = Math.max(10, offset.length());
+    orbitYaw = Math.atan2(offset.x, offset.z);
+    const horizontalLen = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+    orbitPitch = Math.atan2(offset.y, horizontalLen);
 }
 
 // ---- Main Animation Loop ----
@@ -716,28 +943,32 @@ function animate() {
             monolith.rotation.y += 0.001;
         }
 
-        // On-demand texture loading for render mode
+        // On-demand texture loading for render mode (with per-frame budget)
         if (activeFilterType === 'render') {
             camera.updateMatrixWorld();
             cameraMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
             frustum.setFromProjectionMatrix(cameraMatrix);
 
-            monolith.children.forEach(blockGroup => {
+            let budget = 10; // limit renders per frame for responsiveness
+            for (let i = 0; i < monolith.children.length; i++) {
+                const blockGroup = monolith.children[i];
                 const cube = blockGroup.children.find(child => child.isMesh);
-                if (!cube) return;
+                if (!cube) continue;
 
                 if (frustum.intersectsObject(cube)) {
-                    // Block is visible
                     if (!blockGroup.userData.isRendered) {
-                        applyRenderMode(blockGroup);
+                        if (budget > 0) {
+                            applyRenderMode(blockGroup);
+                            budget--;
+                        }
                     }
                 } else {
-                    // Block is not visible
                     if (blockGroup.userData.isRendered) {
                         disposeRenderedBlock(blockGroup);
                     }
                 }
-            });
+                if (budget === 0) break;
+            }
         }
         
         if (renderer && scene && camera) {
@@ -762,14 +993,7 @@ function updateLegend() {
     resetItem.addEventListener('click', () => toggleLegendType(null));
     legendItems.appendChild(resetItem);
 
-    const renderItem = document.createElement('div');
-    renderItem.className = 'legend-item';
-    renderItem.dataset.type = 'render';
-    renderItem.style.cursor = 'pointer';
-    renderItem.style.display = 'none'; // Hide by default
-    renderItem.innerHTML = `<span class="legend-color-box" style="background: linear-gradient(45deg, #ff0000, #00ff00, #0000ff);"></span><span>Render</span>`;
-    renderItem.addEventListener('click', () => toggleLegendType('render'));
-    legendItems.appendChild(renderItem);
+    // Render legend item removed (auto-render on Image)
 
     for (const type in contentTypeDataStyles) {
         const style = contentTypeDataStyles[type];
@@ -791,17 +1015,25 @@ function toggleLegendType(type) {
     if (type === null) { // Handle Reset button
         activeFilterType = null;
     } else {
-        activeFilterType = (activeFilterType === type) ? null : type;
+        // Auto-render when selecting Image: map image -> render
+        if (type === 'image') {
+            activeFilterType = (activeFilterType === 'render') ? null : 'render';
+        } else {
+            activeFilterType = (activeFilterType === type) ? null : type;
+        }
     }
     applySceneFilter();
     highlightLegendSelection();
+    // Fit camera when entering render mode so visible blocks render immediately
+    if (activeFilterType === 'render') {
+        fitCameraToMonolith();
+    }
 }
 
 function applySceneFilter() {
     monolith.children.forEach(blockGroup => {
         const cube = blockGroup.children.find(child => child.isMesh);
         const outline = blockGroup.children.find(child => child.isLineSegments);
-        if (!cube || !outline) return;
 
         // STAGE 1: CLEANUP
         // Always dispose of rendered materials if they exist.
@@ -809,8 +1041,8 @@ function applySceneFilter() {
             disposeRenderedBlock(blockGroup);
         }
         // Ensure material is a single object, not an array, before proceeding.
-        if (Array.isArray(cube.material)) {
-             cube.material = new THREE.MeshPhongMaterial({
+        if (cube && Array.isArray(cube.material)) {
+            cube.material = new THREE.MeshPhongMaterial({
                 color: blockGroup.userData.originalColor,
                 transparent: true, opacity: 0.35
             });
@@ -829,7 +1061,7 @@ function applySceneFilter() {
         } else if (activeFilterType) {
             const hasType = blockGroup.userData.contentTypes.includes(activeFilterType);
             blockGroup.visible = hasType;
-            if (hasType) {
+            if (hasType && cube && outline) {
                 const style = contentTypeDataStyles[activeFilterType];
                 cube.material.color.set(style.cubeColor);
                 outline.material.color.set(style.outlineColor);
@@ -837,12 +1069,12 @@ function applySceneFilter() {
         } else {
             // No filter active: reset to original state.
             blockGroup.visible = true;
-            cube.material.color.set(blockGroup.userData.originalColor);
-            outline.material.color.set(blockGroup.userData.originalOutline);
+            if (cube) cube.material.color.set(blockGroup.userData.originalColor);
+            if (outline) outline.material.color.set(blockGroup.userData.originalOutline);
         }
 
         // STAGE 3: FINAL UI STATE
-        outline.visible = activeFilterType !== 'render';
+        if (outline) outline.visible = activeFilterType !== 'render';
     });
 }
 
@@ -953,25 +1185,25 @@ async function applyRenderMode(blockGroup) {
 
 function highlightLegendSelection() {
     const items = document.querySelectorAll('.legend-item');
-    const renderItem = document.querySelector('.legend-item[data-type="render"]');
-
-    // Show Render button only when Image filter is active
-    if (renderItem) {
-        renderItem.style.display = (activeFilterType === 'image' || activeFilterType === 'render') ? 'flex' : 'none';
-    }
+    const activeTypeForMark = (activeFilterType === 'render') ? 'image' : activeFilterType;
 
     items.forEach(item => {
-        if (!activeFilterType || item.dataset.type === activeFilterType) {
+        const isActive = !!activeTypeForMark && item.dataset.type === activeTypeForMark;
+        if (!activeTypeForMark || isActive) {
             item.classList.remove('inactive');
         } else {
             item.classList.add('inactive');
         }
+        const box = item.querySelector('.legend-color-box');
+        if (box) {
+            box.textContent = isActive ? 'X' : '';
+            box.style.display = 'flex';
+            box.style.alignItems = 'center';
+            box.style.justifyContent = 'center';
+            box.style.fontWeight = 'bold';
+            box.style.color = '#FFFFFF';
+        }
     });
-
-    // If a non-image filter is selected, ensure render mode is turned off
-    if (activeFilterType !== 'image' && activeFilterType !== 'render' && activeFilterType !== null) {
-        // This logic is handled in toggleLegendType now
-    }
 }
 
 // ---- Initialization ----
@@ -1015,13 +1247,15 @@ function init() {
     raycaster = new THREE.Raycaster();
     mouse = new THREE.Vector2();
     
-    // Add event listeners (only window-level events that don't depend on DOM elements)
+    // Add event listeners
     window.addEventListener('resize', onWindowResize, false);
-    window.addEventListener('mousemove', onMouseMove, false);
-    window.addEventListener('mousedown', onMouseDown, false);
-    window.addEventListener('mouseup', onMouseUp, false);
-    window.addEventListener('click', onMouseClick, false);
-    window.addEventListener('wheel', onMouseWheel, { passive: false });
+    window.addEventListener('keydown', onKeyDown, false);
+    const canvas = renderer.domElement;
+    canvas.addEventListener('mousemove', onMouseMove, false);
+    canvas.addEventListener('mousedown', onMouseDown, false);
+    canvas.addEventListener('mouseup', onMouseUp, false);
+    canvas.addEventListener('click', onMouseClick, false);
+    canvas.addEventListener('wheel', onMouseWheel, { passive: false });
 
     // Initial Legend Update
     updateLegend();
@@ -1054,10 +1288,16 @@ document.addEventListener('DOMContentLoaded', () => {
         requestDayData(currentlyDisplayedDate);
     });
 
-    document.getElementById('toggle-rotation').addEventListener('click', () => {
-        isRotating = !isRotating;
-        document.getElementById('toggle-rotation').textContent = isRotating ? 'STOP ROTATION' : 'START ROTATION';
-    });
+    const rotBtn = document.getElementById('toggle-rotation');
+    if (rotBtn) {
+        rotBtn.addEventListener('click', () => {
+            isRotating = !isRotating;
+            rotBtn.textContent = isRotating ? 'STOP ROTATION' : 'START ROTATION';
+        });
+        // Start rotating by default
+        isRotating = true;
+        rotBtn.textContent = 'STOP ROTATION';
+    }
 
     document.getElementById('top-view').addEventListener('click', setTopView);
     document.getElementById('reset-view').addEventListener('click', () => {
@@ -1080,4 +1320,9 @@ document.addEventListener('DOMContentLoaded', () => {
             renderPreview(currentPreviewableTxs[currentTxIndex]);
         }
     });
+
+    // Make preview panel draggable via its title
+    const previewPanel = document.getElementById('content-preview-panel');
+    const previewTitle = document.getElementById('content-title');
+    makeDraggable(previewPanel, previewTitle);
 });

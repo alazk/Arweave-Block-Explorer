@@ -1,16 +1,11 @@
 services:
   - type: web
-    name: arweave-metabolism
-    env: node
+    name: arweave-block-explorer
+    runtime: node
+    buildCommand: "npm install"
+    startCommand: "node server.js"
     plan: free
-    buildCommand: npm install
-    startCommand: npm start
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 20
-    healthCheckPath: /
-    headers:
-      - path: /*
-        name: Access-Control-Allow-Origin
-        value: "*"
+        value: 18.18.0

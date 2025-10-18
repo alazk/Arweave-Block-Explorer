@@ -1,17 +1,19 @@
 const express = require('express');
-const http = require('http');
 const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
+const http = require('http');
 const app = express();
 const port = parseInt(process.env.PORT || '3002', 10);
 const server = http.createServer(app);
-app.use(express.static(path.join(__dirname, 'public')));
+const wss = new WebSocket.Server({ server });
 
-// Explicit root and health endpoints for Render
-app.get('/health', (_req, res) => res.status(200).send('ok'));
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-const wss = new WebSocket.Server({ noServer: true });
+// Serve static files from frontend directory (matches main branch structure)
+app.use(express.static(path.join(__dirname, 'frontend')));
+// Favicon fallback if not served by static (should be served from frontend/)
+app.get('/favicon.ico', (req, res) => {
+  res.sendFile(path.join(__dirname, 'frontend', 'favicon.ico'));
+});
 // Scan from current head backward for a fixed number of blocks, collecting recent media
 async function streamRecentTransactionsQuick(ws, blockScanLimit = 750, perTypeLimit = 250) {
     try {
@@ -152,7 +154,7 @@ async function fetchAllBlockTransactions(height) {
         after = lastEdge?.cursor || null;
         attempts++;
         // Be polite to the endpoint
-        if (hasNextPage) await new Promise(r => setTimeout(r, 100));
+        if (hasNextPage) await new Promise(r => setTimeout(r, 40));
     }
     return edges;
 }
@@ -342,14 +344,30 @@ async function streamBlocksForDay(ws, date, streamControl, visualOnly = false, e
                 }
 
                 // Fetch full list of transactions for this block (GraphQL pages default to 10)
-                const edges = await fetchAllBlockTransactions(currentHeight);
-                const transactions = edges.map(edge => ({
-                    id: edge.node.id,
-                    data_size: edge.node.data.size,
-                    tags: edge.node.tags.reduce((acc, tag) => { acc[tag.name] = tag.value; return acc; }, {})
-                }));
+                let edges;
+                try {
+                    edges = await fetchAllBlockTransactions(currentHeight);
+                } catch (error) {
+                    console.error(`Failed to fetch transactions for block ${currentHeight}:`, error);
+                    edges = [];
+                }
+                const transactions = (edges || []).map(edge => {
+                    const node = edge && edge.node ? edge.node : {};
+                    const dataSize = (node.data && typeof node.data.size !== 'undefined') ? node.data.size : 0;
+                    const tagsArr = Array.isArray(node.tags) ? node.tags : [];
+                    const tagsObj = tagsArr.reduce((acc, tag) => { if (tag && tag.name) acc[tag.name] = tag.value; return acc; }, {});
+                    return {
+                        id: node.id,
+                        data_size: dataSize,
+                        tags: tagsObj
+                    };
+                });
 
-                const hasVisual = transactions.some(tx => tx.tags['Content-Type'] && tx.tags['Content-Type'].startsWith('image/'));
+
+                const hasVisual = transactions.some(tx => {
+                    const ct = tx && tx.tags ? (tx.tags['Content-Type'] || tx.tags['content-type'] || '') : '';
+                    return typeof ct === 'string' && ct.startsWith('image/');
+                });
 
                 if (!visualOnly || hasVisual) {
                     const payload = {
@@ -363,25 +381,22 @@ async function streamBlocksForDay(ws, date, streamControl, visualOnly = false, e
                 }
 
                 currentHeight++;
-                await new Promise(resolve => setTimeout(resolve, 500));
-
+                await new Promise(resolve => setTimeout(resolve, 150));
             } catch (error) {
-                console.error(`Failed to process block ${currentHeight}:`, error.message);
+                console.error(`Failed to process block ${currentHeight}:`, error);
                 currentHeight++; // Skip failed block
             }
         }
 
         console.log(`Finished streaming ${date.toDateString()}`);
-
         if (!visualOnly) {
-             ws.send(JSON.stringify({ type: 'dayStreamComplete' }));
+            ws.send(JSON.stringify({ type: 'dayStreamComplete' }));
         }
-
         return visualBlockSent;
 
     } catch (error) {
-        console.error('Error in streamBlocksForDay:', error.message);
-        ws.send(JSON.stringify({ type: 'error', message: 'An error occurred while streaming blocks.' }));
+        console.error('Error in streamBlocksForDay:', error);
+        try { ws.send(JSON.stringify({ type: 'error', message: 'An error occurred while streaming blocks.' })); } catch {}
     }
 }
 
@@ -391,10 +406,12 @@ wss.on('connection', ws => {
     console.log('Client connected.');
     
     ws.on('message', message => {
-        console.log('Received message from client:', message);
-        const parsed = JSON.parse(message);
-        console.log('Parsed client message:', parsed);
-        if (parsed.type === 'get_day') {
+        try {
+            const raw = (typeof message === 'string') ? message : message.toString('utf8');
+            console.log('Received message from client:', raw);
+            const parsed = JSON.parse(raw);
+            console.log('Parsed client message:', parsed);
+            if (parsed.type === 'get_day') {
             // Stop any existing stream for this connection
             if (activeStreams.has(ws)) {
                 activeStreams.get(ws).stop = true;
@@ -402,14 +419,14 @@ wss.on('connection', ws => {
             // Support either {date: 'yyyy-mm-dd'} or {start: ISO, end: ISO}
             let date;
             let endOverride = null;
-            if (parsed.start) {
+            if (parsed && parsed.start) {
                 date = new Date(parsed.start);
                 if (parsed.end) {
                     const end = new Date(parsed.end);
                     endOverride = Math.floor(end.getTime() / 1000);
                 }
             } else {
-                date = new Date(parsed.date);
+                date = parsed && parsed.date ? new Date(parsed.date) : new Date();
             }
             console.log(`Requesting data for date: ${date.toUTCString()}${endOverride ? ` (end=${endOverride})` : ''}`);
             
@@ -422,7 +439,7 @@ wss.on('connection', ws => {
             if (activeStreams.has(ws)) {
                 activeStreams.get(ws).stop = true;
             }
-            const date = new Date(parsed.date);
+            const date = parsed && parsed.date ? new Date(parsed.date) : new Date();
             const streamControl = { stop: false };
             activeStreams.set(ws, streamControl);
 
@@ -459,6 +476,10 @@ wss.on('connection', ws => {
             }
             streamRecentTransactionsQuick(ws, blockLimit, perType);
         }
+        } catch (err) {
+            console.error('WS message handling error:', err.message, '\nStack:', err.stack);
+            try { ws.send(JSON.stringify({ type: 'error', message: `Invalid request: ${err.message}` })); } catch {}
+        }
     });
 
     ws.on('close', () => {
@@ -481,11 +502,19 @@ server.on('upgrade', (request, socket, head) => {
     });
 });
 
-// SPA fallback: serve index.html for any other GET to avoid 404s on refresh/deep links
+// SPA fallback: serve frontend/index.html for any other GET
 app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'frontend', 'index.html'));
 });
 
 server.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
+    console.log(`Arweave Block Stream server listening on http://localhost:${port}`);
+});
+
+// Global error handlers to avoid process exit
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
 });

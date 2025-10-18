@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arweave Metabolism</title>
+    <title>Arweave Block Stream</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
@@ -13,11 +13,6 @@
     <div id="main-ui">
         <div id="three-container"></div>
 
-        <div id="info" class="ui-panel">
-            <h2>Arweave Block Explorer</h2>
-            <div id="comms" aria-live="polite">Connecting...</div>
-            <div id="stats">0 blocks (0 B)</div>
-        </div>
 
         <div id="navigation-prev">
             <a id="prev-day" class="arrow">&#x2190;</a>
@@ -26,7 +21,10 @@
             <a id="next-day" class="arrow">&#x2192;</a>
         </div>
 
-        <div id="date-display" class="ui-panel">Today</div>
+        <div id="date-display" class="ui-panel">
+            <div id="date-text">Today</div>
+            <div id="stats" class="date-stats">0 blocks (0 B)</div>
+        </div>
 
         <div id="legend" class="ui-panel">
             <h3 id="legend-title">BY DATA TYPE</h3>
@@ -82,6 +80,6 @@
             "three/": "https://unpkg.com/three@0.158.0/"
         }}
     </script>
-    <script type="module" src="sketch.js?v=45"></script>
+    <script type="module" src="sketch.js?v=61"></script>
 </body>
 </html>
